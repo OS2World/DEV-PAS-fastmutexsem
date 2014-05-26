@@ -1,0 +1,118 @@
+
+            An particular fast semaphore realization for OS/2.
+
+This archive contains the result of my quest in searching for an fast, 
+reliable and serialized algorythm for semaphores. Need to say that this
+is not an trivial task, as you might think at the first look (at least
+I thought so :-) I spent summary about five hours to implement them.
+In the last instance I realized that OS/2`s semaphores are not so bad
+as you might think - my fully (?) assembler-optimized semaphores are
+only three times faster than OS/2`s (and we don`t take into account the
+context-switching time which happens each time when we`re calling an
+Dos### API function, you know, this is an *very* time-eating operation).
+
+For simplest semaphore realization one bit of memory is enough. It is one -
+the semaphore is owned; zero - it is not. To grab semaphore you must do two
+things in one operation: first, to check if it is not already busy; and
+second to set it to 1. This must be done in a single processor-operation
+since between any two commands can occur an thread-switch and other 
+`aggresive` thread can eventually grab our semaphore. The x8086 processors
+have three suitable commands for this: xchg, bts/btr (386+) and cmpxchg (486+).
+The first works with at least one byte of memory, second - with one bit and
+third - also with one byte. The cmpxchg command was especially designed
+for semaphores, although it is a bit obscure (for me, since I lost somewhere
+my docs on i486). Let`s try to implement the simplest semaphore algorythm:
+
+request: jmp   check
+sleep:	 call  DosSleep(0)
+check:   mov   al,1
+         xchg  al,Sem
+         test  al,al
+         jnz   sleep		;Semaphore busy, lets check it again
+
+For multi-processor systems we also need an LOCK prefix before XCHG command
+to prevent two different processors from altering the same variable.
+
+This implementation have one major leak: we NEVER can be sure in what 
+order the semaphore will be given to some threads that desire it.
+And another one is the high degree of posibility that if a thread
+owns the semaphore it will own it for a long period of time, even if it
+sometimes releases it. This happens when (and because) the time interval
+between semaphore releases/requests is VERY short and a task switching
+is very likely to not occur. So, thread grabs semaphore again before any
+other thread has a chance to get it. As an workaround we can release
+thread`s time-slice (DosSleep(0)) right after releasing semaphore, but
+what if nobody needs the semaphore?
+Another leak in this algorythm is the need for polling semaphore once
+in each time-slice until semaphore becomes free - this is an very bad
+approach to multi-programming, you know.
+
+So, the most optimal algorythm I think is this: on each semaphore request
+we first check if semaphore is busy, if not - we`re marking him as owned
+and we`re on our way, if it is - we`re adding our thread identifier into
+a *queue* associated with this semaphore and we suspend our thread until
+current semaphore owner releases it. When semaphore owner releases semaphore,
+it checks if there are queued threads waiting for semaphore, if not it
+marks semaphore as unowned and that`s it. If there are such threads
+it marks semaphore as owned by first thread in queue then releases the
+wakes it up. Anyhow, the thread is simply *marked* as released - it does
+not receive control immediately, but when OS/2 sheduler passes control to
+the thread. And when it will, the thread will already be the owner of
+semaphore.
+An particular realization of this algorythm is contained in os2SysLib.pas
+(this is an subset of my os2SysLib so don`t wonder why the name is so common);
+it is specifical for Virtual Pascal; although you can use them with minimal
+changes in any other language since it is written fully in assembler;
+You only have to replace the Virtual-Pascal specific functions SuspendThread
+and ReleaseThread with corresponding functions in your language; if your
+language does not have such, use OS/2 API functions DosSuspendThread and
+DosReleaseThread; don`t forget that OS/2 API uses C calling sequence so you
+have to remove parameters from stack after call.
+
+For a comparison of these semaphores and OS/2`s native semaphores I wrote 
+three tiny programs: they`re in subdirectory tests/. TestSem.pas shows
+how the semaphore works: it launches fifteen threads each writing with
+its own color numbers from one to nine and between numbers it yields to
+operating system calling DosSleep(0) to give other threads more chances
+to run and try to break the fsmRequest() barrier.
+
+For an effectivity comparison of these and OS/2 native semaphores I wrote
+three tiny programs placed in tests/ subdirectory. First, called TestSem.pas,
+runs fifteen identical threads each of which writes to screen using an unical 
+color numbers from one to nine; between output of each two numbers thread 
+gives up its current time slice yielding DosSleep(0), to give other threads
+more chances to run and to break fmsRequest() - fmsRelease() barrier. Second,
+TestStdSem does the same, but using standard OS/2 mutex semaphores. The speed
+difference between these two programs is unnoticeable since it takes many
+more time to draw text on screen (and to sleep) than to request/release
+a semaphore. To test the speed difference I wrote third program - it computes
+the number of Request/Release pairs per second for OS/2 standard and for
+proposed semaphores. Run BenchSem.exe and see what is the difference.
+On my 486DX4/100 it is about three times - not too much but I wrote 
+these semaphores primarily for an full-screen graphics library where
+any speedup is welcome.
+
+The source code was written in demonstrational version of Virtual Pascal,
+so they will compile without changes in commercial version too. Since license
+agreement for demo version prohibits spreading of the executable modules
+produced by demo version, I made a few changes and recompiled sources
+using early demo version of Virtual Pascal which is (I presume) free.
+I done this for those of you who do not use Virtual Pascal, but are
+interested in the matter of semaphores.
+
+The source code is provided as-is. The author is not responsible for any
+damage caused by errors in source code and for spelling/grammatical errors
+in this text. The permission is granted to use it for any purpose except
+military ones :-)
+
+I will be very glad if someone will tell me how I can do them even faster.
+This primarily can be achieved (?) by using cmpxchg command instead of
+bts/btr & xchg that I used.
+
+How to contact me:
+   fidoNet: 2:5030/84.5@fidonet
+   e-mail:  bit@freya.etu.ru
+
+Your sincerely,
+   _\ndy Zabolotny
+
